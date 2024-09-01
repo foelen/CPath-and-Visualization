@@ -168,7 +168,8 @@ https://drive.google.com/file/d/1o9Es1qdY15y8q_gsjX3KVkn7HS8amlSF/view?usp=shari
                     filtered = []
 
                     # 找到前景轮廓的索引（parent == -1）
-                    hierarchy_1 = np.flatnonzero(hierarchy[:,1] == -1)
+                    # np.flatnonzero 
+                    hierarchy_1 = np.flatnonzero(hierarchy[:,1] == -1) 
                     all_holes = []
                     
                     # 遍历前景轮廓索引
@@ -331,4 +332,148 @@ https://drive.google.com/file/d/1o9Es1qdY15y8q_gsjX3KVkn7HS8amlSF/view?usp=shari
 
     img = vis_wsi(slide, contours_tissue, holes_tissue)
     img.show()
+
+#### 基础知识补充：__前景轮廓__  
+_在图像处理和计算机视觉中，____“前景轮廓”___ _指的是图像中感兴趣的对象或区域的边界。在这段代码的上下文中，前景轮廓具体指的是组织区域的边界。_
+
+_更详细地解释：
+前景：在图像中，前景通常指我们感兴趣的部分，或图像中需要检测和处理的对象。比如在医学图像中，前景可能是病变区域、组织、细胞等。_
+
+_轮廓：轮廓是图像中具有相同颜色或灰度值的区域的边界线。通过轮廓检测，算法可以识别图像中的不同对象及其形状。_
+
+_前景轮廓在代码中的角色：
+在代码中，通过一系列图像处理操作（如阈值分割、形态学操作等），图像被分割为前景（组织区域）和背景。然后，使用 OpenCV 的 cv2.findContours 函数在二值化图像中查找这些前景区域的轮廓。_
+
+_这些轮廓就是前景轮廓，它们表示组织区域的边界，用于后续分析，比如计算面积、形状特征，或进一步过滤和处理等。_
+
+#### 基础知识补充：__父轮廓__
+[父轮廓](Basic_knowledge/parent_contour.md)
+
+
+#### 代码知识补充
+[np.flatnonzero](Basic_knowledge/npflatnonzero.md)  
+[herarchy](Basic_knowledge/hierarchy.md)  
+
+
+
+## 6.幻灯片打补丁
+根据组织分割的结果，我们现在将提取一系列固定（预定）大小的补丁。这些补丁将构成基于深度学习的任何下游应用的基础。
+# 提取所有有效补丁的坐标
+
+    class IsInContour():
+        def __init__(self, contour, patch_size, center_shift=0.5):
+            self.cont = contour  # 轮廓
+            self.patch_size = patch_size  # 补丁大小
+            self.shift = int(patch_size//2*center_shift)  # 中心偏移量
+            
+        def __call__(self, pt): 
+            center = (pt[0]+self.patch_size//2, pt[1]+self.patch_size//2)  # 补丁中心点坐标
+            if self.shift > 0:
+                all_points = [(center[0]-self.shift, center[1]-self.shift),
+                            (center[0]+self.shift, center[1]+self.shift),
+                            (center[0]+self.shift, center[1]-self.shift),
+                            (center[0]-self.shift, center[1]+self.shift)
+                            ]
+            else:
+                all_points = [center]
+
+            for points in all_points:
+                if cv2.pointPolygonTest(self.cont, tuple(np.array(points).astype(float)), False) >= 0:
+                    return 1  # 补丁中心位于轮廓内
+            return 0  # 补丁中心位于轮廓外
+
+    def is_in_holes(holes, pt, patch_size):
+        for hole in holes:
+            if cv2.pointPolygonTest(hole, (pt[0]+patch_size/2, pt[1]+patch_size/2), False) > 0:
+                return 1  # 补丁中心位于孔内
+        return 0  # 补丁中心位于孔外
+
+
+    def is_in_contours(cont_check_fn, pt, holes=None, patch_size=256):
+        if cont_check_fn(pt):  # 检查补丁中心是否位于轮廓内
+            if holes is not None:
+                return not is_in_holes(holes, pt, patch_size)  # 如果指定了孔，则检查补丁中心是否位于孔外
+            else:
+                return 1  # 如果未指定孔，则返回1，表示补丁中心位于轮廓内
+        return 0  # 补丁中心位于轮廓外
+
+
+    def process_contours(wsi, contours_tissue, holes_tissue, patch_level=0, patch_size=256, step_size=256):
+        n_contours = len(contours_tissue)  # 轮廓的数量
+        print("Total number of contours to process: ", n_contours)
+        fp_chunk_size = math.ceil(n_contours * 0.05)  # 迭代处理轮廓的阶段性进度输出的大小
+        init = True
+        all_coords = []  # 存储所有补丁的坐标
+        for idx, cont in enumerate(contours_tissue):
+            if (idx + 1) % fp_chunk_size == fp_chunk_size:
+                print('Processing contour {}/{}'.format(idx, n_contours))  # 输出轮廓处理进度信息
+            coords = process_contour(wsi, cont, holes_tissue[idx], patch_level, patch_size, step_size)  # 处理单个轮廓，获取补丁坐标
+            all_coords.append(coords)  # 将补丁坐标添加到列表中
+        flatten_coords = []
+        for entry in all_coords:
+            for coord in entry:
+                flatten_coords.append(coord)
+        return flatten_coords  # 返回所有补丁的坐标
+
+
+    def process_contour(
+            wsi, 
+            cont,
+            contour_holes,
+            patch_level,
+            patch_size=256,
+            step_size=256,
+            use_padding=True,
+        ):
+        
+        start_x, start_y, w, h = cv2.boundingRect(cont)  # 获取轮廓的边界框坐标和尺寸
+        ref_patch_size = (patch_size, patch_size)  # 参考补丁的大小
+        
+        img_w, img_h = wsi.level_dimensions[0]  # 获取幻灯片图像的原始尺寸
+        if use_padding:
+            stop_y = start_y+h
+            stop_x = start_x+w
+        else:
+            stop_y = min(start_y+h, img_h-ref_patch_size[1]+1)
+            stop_x = min(start_x+w, img_w-ref_patch_size[0]+1)
+
+        print("Bounding Box:", start_x, start_y, w, h)  # 输出轮廓的边界框信息
+        print("Contour Area:", cv2.contourArea(cont))  # 输出轮廓的面积
+
+        cont_check_fn = IsInContour(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)  # 创建用于检查补丁中心是否位于轮廓内的函数
+
+        step_size_x = step_size 
+        step_size_y = step_size 
+
+        x_range = np.arange(start_x, stop_x, step=step_size_x)  # 计算沿x轴的坐标范围
+        y_range = np.arange(start_y, stop_y, step=step_size_y)  # 计算沿y轴的坐标范围
+        x_coords, y_coords = np.meshgrid(x_range, y_range, indexing='ij')  # 生成坐标网格
+        coord_candidates = np.array([x_coords.flatten(), y_coords.flatten()]).transpose()  # 获取所有可能的补丁中心坐标
+
+        results = []
+        for coord in coord_candidates:
+            if is_in_contours(cont_check_fn, coord, contour_holes, ref_patch_size[0]):  # 检查补丁中心是否位于轮廓内
+                results.append(coord)  # 如果位于轮廓内，则将坐标添加到结果中
+        results = np.array(results)
+        print('Extracted {} coordinates'.format(len(results)))  # 输出提取的坐标数量
+        return results  # 返回提取的坐标
+
+    coords = process_contours(slide, contours_tissue, holes_tissue)  # 提取所有有效补丁的坐标
+
+输出:  
+
+    Total number of contours to process:  2  
+    Bounding Box: 4896 20160 50945 13953  
+    Contour Area: 388059008.0  
+    Extracted 5854 coordinates  
+    Bounding Box: 320 3664 57105 23633  
+    Contour Area: 573257856.0  
+    Extracted 8910 coordinate
+
+可视化
+
+    # visualize the patches 
+    img = vis_wsi(slide, contours_tissue, holes_tissue, coords)
+    img.show()
+
 _转载自 https://aletolia.github.io/Session%201/_
