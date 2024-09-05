@@ -146,17 +146,17 @@ https://drive.google.com/file/d/1o9Es1qdY15y8q_gsjX3KVkn7HS8amlSF/view?usp=shari
         import cv2
 
         def segment_tissue(
-            wsi,
-            seg_level=2,
-            sthresh=20,
-            sthresh_up = 255,
-            mthresh=7,
-            close=0,
-            use_otsu=False, 
-            filter_params={'a_t':100, 'a_h': 4, 'max_n_holes': 5},
-            ref_patch_size=512,
-            exclude_ids=[],
-            keep_ids=[]):
+            wsi,  # 传入的全片图像（Whole Slide Image），即要进行组织分割的图像
+            seg_level=2,  # 图像金字塔中的层级，表示在多分辨率图像中要使用的分辨率层级,层级越高分辨率越低。
+            sthresh=20,  # HSV 色彩空间中饱和度的下限阈值，用于过滤掉非组织区域
+            sthresh_up = 255,  # HSV 色彩空间中饱和度的上限阈值，用于过滤掉非组织区域
+            mthresh=7,  # 中值滤波器的阈值，用于平滑图像以减少噪声
+            close=0,  # 形态学操作参数，用于闭合二值化图像中的小缝隙。
+            use_otsu=False,  # 如果为 True，则使用 Otsu 方法进行自动阈值分割
+            filter_params={'a_t':100, 'a_h': 4, 'max_n_holes': 5},  # 一个字典，包含用于过滤二值化图像的参数：a_t: 保留的最小组织面积。a_h: 组织的最小孔洞面积。max_n_holes: 允许的最大孔洞数量。
+            ref_patch_size=512,  # 参考块的大小，用于计算和比较 
+            exclude_ids=[],  # 要排除的区域ID列表
+            keep_ids=[]):  # 要保留的区域ID列表
                 """
                     通过HSV -> 中值阈值 -> 二值化对组织进行分割
                 """
